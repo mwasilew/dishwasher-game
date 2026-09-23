@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Dishwasher Packing</title>
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🍽️</text></svg>">
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three.module.js",
+    "three/addons/controls/OrbitControls.js": "./vendor/OrbitControls.js",
+    "three/addons/loaders/GLTFLoader.js": "./vendor/GLTFLoader.js",
+    "cannon-es": "./vendor/cannon-es.js"
+  }
+}
+</script>
+</head>
+<body>
+
+<canvas id="scene"></canvas>
+
+<!-- ============================ In-game HUD ============================ -->
+<div id="hud" class="hidden">
+
+  <div id="hud-top">
+    <div id="level-badge">
+      <div class="lvl-num">Level <span id="lvl-num">1</span></div>
+      <div class="lvl-name" id="lvl-name">Just the breakfast things</div>
+    </div>
+    <div id="top-right">
+      <button class="icon-btn" id="btn-auto" title="Load it for me (A)">✨</button>
+      <button class="icon-btn" id="btn-help" title="Controls (H)">?</button>
+      <button class="icon-btn" id="btn-reset" title="Restart level (Ctrl+R)">⟳</button>
+      <button class="icon-btn" id="btn-menu" title="Level select (Esc)">☰</button>
+    </div>
+  </div>
+
+  <div id="rack-switch">
+    <button class="rack-tab" data-rack="lower">Lower rack</button>
+    <button class="rack-tab" data-rack="upper">Upper rack</button>
+    <div class="rack-hint">Tab</div>
+  </div>
+
+  <div id="warnings"></div>
+
+  <div id="hud-bottom">
+    <div id="queue-wrap">
+      <div id="queue-label">Still to load <span id="queue-count"></span></div>
+      <div id="queue"></div>
+    </div>
+    <button id="btn-run" disabled>
+      <span class="run-main">Run wash cycle</span>
+      <span class="run-sub">Enter</span>
+    </button>
+  </div>
+
+  <div id="held-hint" class="hidden">
+    <b>Q</b>/<b>E</b> turn · <b>R</b> tip · <b>F</b> flip · <b>wheel</b> push/pull · <b>click</b> drop · <b>Bksp</b> put back
+  </div>
+</div>
+
+<!-- ============================ Cycle overlay ============================ -->
+<div id="cycle" class="hidden">
+  <div class="cycle-inner">
+    <div class="cycle-spinner"></div>
+    <div class="cycle-text">Closing the door…</div>
+  </div>
+</div>
+
+<!-- ============================ Result modal ============================ -->
+<div id="result" class="modal hidden">
+  <div class="modal-card">
+    <div class="result-stars" id="result-stars"></div>
+    <h2 id="result-title">Sparkling.</h2>
+    <p id="result-sub"></p>
+    <ul id="result-list"></ul>
+    <div class="modal-actions">
+      <button class="btn ghost" id="btn-retry">Start over</button>
+      <button class="btn primary" id="btn-fix">Let me fix it</button>
+      <button class="btn primary" id="btn-next">Next level</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ Menu / level select ============================ -->
+<div id="menu" class="modal">
+  <div class="modal-card wide">
+    <div class="title-block">
+      <h1>Dishwasher<span>Packing</span></h1>
+      <p class="tagline">Everything must fit. Everything must come out clean.</p>
+    </div>
+    <div id="levels"></div>
+    <div class="menu-foot">
+      <button class="btn ghost small" id="btn-howto">How to play</button>
+      <button class="btn ghost small" id="btn-wipe">Reset progress</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ Help ============================ -->
+<div id="help" class="modal hidden">
+  <div class="modal-card">
+    <h2>How to play</h2>
+    <p class="help-lead">Load every dish into the two racks, then close the door and run it.
+      The machine is the judge: if the racks won't slide home, or a mug is sitting the wrong
+      way up, or a plate is shading a glass from the spray arms — you'll hear about it.</p>
+    <div class="keys">
+      <div><b>Click a dish</b><span>in the tray below to pick it up</span></div>
+      <div><b>Move mouse</b><span>carry the dish</span></div>
+      <div><b>Wheel</b><span>lift it / lower it</span></div>
+      <div><b>Q / E</b><span>turn left / right</span></div>
+      <div><b>R</b><span>tip on its side</span></div>
+      <div><b>F</b><span>flip upside down</span></div>
+      <div><b>Click</b><span>let go</span></div>
+      <div><b>Backspace</b><span>put it back in the tray</span></div>
+      <div><b>Drag a placed dish</b><span>pick it up again</span></div>
+      <div><b>Tab</b><span>swap which rack is pulled out</span></div>
+      <div><b>Drag empty space</b><span>orbit the camera</span></div>
+      <div><b>Enter</b><span>run the wash cycle</span></div>
+      <div><b>A</b><span>load the whole level for you</span></div>
+    </div>
+    <h3>When it won't run</h3>
+    <p class="help-lead">Nothing is thrown away. The racks come back out packed exactly
+      as you left them, and whatever the machine objected to is <b>marked in red</b> —
+      pick it up and the mark clears. <b>Let me fix it</b> takes you back to the load;
+      <b>Start over</b> empties the machine, and you only need that if you want it.</p>
+
+    <h3>The rules of a good load</h3>
+    <ul class="rules">
+      <li><b>Cups, bowls and pots face down.</b> Anything left facing up fills with water.</li>
+      <li><b>Nothing sticks out.</b> The racks have to roll in and the door has to shut.</li>
+      <li><b>Don't block the spray arms.</b> Keep things above the rack floor — a pan handle
+        poking down jams the arm.</li>
+      <li><b>Don't shadow other dishes.</b> Water travels in straight lines. A big tray leaning
+        over the glasses leaves them dirty.</li>
+      <li><b>Load it where it belongs.</b> Plates, pots and trays go in the lower rack where the spray is strongest; cups, glasses and light plastic go up top. The tray marks each item ▼ or ▲.</li>
+    </ul>
+    <div class="modal-actions">
+      <button class="btn primary" id="btn-help-close">Got it</button>
+    </div>
+  </div>
+</div>
+
+<div id="loading">Warming up the water…</div>
+
+<script>
+// The loading panel only ever disappears once the game boots. If something stops that
+// happening, say what — the usual culprit is opening this file directly from disk,
+// where the browser refuses to load ES modules.
+window.addEventListener('error', function (e) {
+  var el = document.getElementById('loading');
+  if (!el || el.classList.contains('hidden')) return;
+  var why = location.protocol === 'file:'
+    ? 'This page is open from your filesystem. Browsers will not load ES modules over '
+      + 'file://. Serve the folder instead — <code>python3 -m http.server 8000</code> — '
+      + 'and open <code>http://localhost:8000</code>.'
+    : 'Your browser reported: <code>' + String(e.message || e.type) + '</code>'
+      + '<br>This game needs WebGL and ES module support.';
+  el.innerHTML = '<div style="max-width:460px;text-align:center;line-height:1.7;padding:24px">'
+    + '<b style="display:block;font-size:17px;margin-bottom:10px;color:#e9eef4">'
+    + 'The dishwasher would not start.</b>' + why + '</div>';
+}, true);
+</script>
+
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>

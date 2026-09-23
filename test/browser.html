@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Dishwasher Packing — integration test</title>
+<style>
+  body { font: 13px/1.5 ui-monospace, monospace; background:#0b0e12; color:#dfe6ee; margin:0; padding:14px; }
+  pre { white-space:pre-wrap; margin:0 }
+  iframe { position:fixed; right:8px; bottom:8px; width:520px; height:340px; border:1px solid #333; opacity:.9 }
+  .ok{color:#49d17e} .bad{color:#ff6b6b}
+</style>
+<h3 id="status">running…</h3>
+<pre id="out"></pre>
+<iframe id="frame" src="../index.html?level=1"></iframe>
+
+<script type="module">
+const out = document.getElementById('out');
+const status = document.getElementById('status');
+let failures = 0;
+// also beam every line at the static server so a headless run can be read from its log
+const beam = (s) => { try { fetch('/__test/' + encodeURIComponent(s).replace(/%20/g, '+')); } catch { /* ignore */ } };
+const log = (s, cls = '') => { out.innerHTML += `<span class="${cls}">${s}</span>\n`; beam(s); };
+const ok  = (s) => log(`  ✓ ${s}`, 'ok');
+const bad = (s) => { failures++; log(`  ✗ ${s}`, 'bad'); };
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const frame = document.getElementById('frame');
+
+async function waitFor(fn, timeout = 20000, label = 'condition') {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeout) {
+    try { if (fn()) return true; } catch { /* not ready */ }
+    await sleep(80);
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
+function api() { return frame.contentWindow.__game; }
+
+/** Put the machine back in its loading pose without waiting out an animation. */
+function reopen() {
+  const g = api();
+  g.dw.door.snapTo(true);
+  g.dw.racks.lower.snapTo(1);
+  g.dw.racks.upper.snapTo(0);
+}
+
+// surface anything the game itself throws — the iframe has its own console
+frame.addEventListener('load', () => {
+  const w = frame.contentWindow;
+  w.addEventListener('error', (e) => bad(`game error: ${e.message} @ ${e.filename}:${e.lineno}`));
+  w.addEventListener('unhandledrejection', (e) => bad(`game rejection: ${e.reason}`));
+});
+
+/** Clear the machine and place exactly the dishes described. */
+function setup(specs) {
+  const g = api();
+  for (const d of [...g.game.dishes]) {
+    g.world.removeBody(d.body);
+    g.view.scene.remove(d.mesh);
+  }
+  g.game.dishes.length = 0;
+  for (const e of g.game.queue) e.remaining = 0;
+  const made = [];
+  for (const s of specs) {
+    const dish = g.spawnDish(s.id, s.pos);
+    if (s.euler) dish.body.quaternion.setFromEuler(...s.euler);
+    made.push(dish);
+  }
+  return made;
+}
+
+/** Add one dish without disturbing what is already loaded. */
+function place(spec) {
+  const g = api();
+  const dish = g.spawnDish(spec.id, spec.pos);
+  if (spec.euler) dish.body.quaternion.setFromEuler(...spec.euler);
+  return dish;
+}
+
+async function settle(seconds = 2.2) { await sleep(seconds * 1000); }
+
+async function main() {
+  log('waiting for the game to boot…');
+  await waitFor(() => api()?.game?.dishes, 20000, 'game boot');
+  const g = api();
+  ok('module graph loaded, game object exposed');
+
+  const R = g.RACKS, TUB = g.TUB;
+  const lowerY = R.lower.y, upperY = R.upper.y;
+  const rackZ = () => g.dw.racks.lower.z;
+
+  // ---------------------------------------------------------------- 1
+  log('\n1. a single, correctly loaded plate should pass');
+  setup([{ id: 'dinner-plate', pos: [0, lowerY + 0.15, rackZ() - 0.05], euler: [Math.PI / 2, 0, 0] }]);
+  await settle(1.4);
+  let res = await g.cycle.run({ quick: true });
+  if (!res) bad('cycle returned nothing');
+  else if (res.pass) ok(`passed with ${res.stars} star(s)`);
+  else bad(`unexpectedly failed: ${JSON.stringify(res.bad)}`);
+
+  // reopen for the next case
+  reopen();
+
+  // ---------------------------------------------------------------- 2
+  log('\n2. a mug the right way up should be rejected for holding water');
+  setup([{ id: 'mug', pos: [0, lowerY + 0.055, rackZ() - 0.05], euler: [0, 0, 0] }]);
+  await settle(1.4);
+  res = await g.cycle.run({ quick: true });
+  const heldWater = (res.bad ?? []).some((b) => /facing up|filled with|puddle/i.test(b));
+  if (heldWater) ok(`rejected: "${res.bad[0]}"`);
+  else {
+    const m = g.game.dishes.find((d) => d.id === 'mug');
+    const up = m ? g.cycle.openingDir(m) : null;
+    bad(`expected a water verdict; opening points ${up ? `(${up.x.toFixed(2)},${up.y.toFixed(2)},${up.z.toFixed(2)})` : 'nowhere'}, got ${JSON.stringify(res)}`);
+  }
+
+  reopen();
+
+  // ---------------------------------------------------------------- 3
+  log('3. the same mug upside down should pass');
+  setup([{ id: 'mug', pos: [0, lowerY + 0.055, rackZ() - 0.05], euler: [Math.PI, 0, 0] }]);
+  await settle(1.4);
+  res = await g.cycle.run({ quick: true });
+  res.pass ? ok(`passed with ${res.stars} star(s)`) : bad(`unexpectedly failed: ${JSON.stringify(res.bad)}`);
+
+  reopen();
+
+  // ---------------------------------------------------------------- 4
+  log('4a. a dish left on the open door should stop the cycle before it starts');
+  setup([{ id: 'dinner-plate', pos: [0, lowerY + 0.06, rackZ() + 0.30], euler: [0, 0, Math.PI / 2] }]);
+  await settle(1.6);
+  res = await g.cycle.run({ quick: true });
+  const stray = !res.pass && (res.aborted || (res.bad ?? []).length);
+  stray ? ok(`refused to run: "${(res.bad ?? [])[0]}"`) : bad(`expected an abort, got ${JSON.stringify(res)}`);
+
+  reopen();
+
+  // Overhang is checked against where the item *will be* once the rack rolls home, so
+  // this is a pure geometry rule — read it straight off preflight, before gravity
+  // has a chance to tip the thing off the rack and turn it into a different failure.
+  log('4b. a platter overhanging the front of the rack should be flagged as proud');
+  setup([{ id: 'platter', pos: [0, lowerY + 0.03, rackZ() + 0.28], euler: [0, 0, 0] }]);
+  await sleep(120);
+  const issues = g.cycle.preflight();
+  const kinds = issues.map((i) => i.kind);
+  kinds.includes('proud')
+    ? ok(`flagged: "${issues.find((i) => i.kind === 'proud').text}"`)
+    : bad(`expected a 'proud' issue, got ${JSON.stringify(kinds)}`);
+
+  reopen();
+
+  // ---------------------------------------------------------------- 5
+  /* The arms spray upward, so it is the item *underneath* that casts the shadow.
+     Measured directly rather than through a wash cycle: a mug dropped onto a tray can
+     bounce onto its side, and then the load fails the water rule before coverage is
+     ever looked at — which tells us nothing about shading. */
+  log('5. a mug sitting on a baking tray should read as shaded from the spray');
+  const [tray] = setup([{ id: 'baking-tray', pos: [0, lowerY + 0.13, rackZ() - 0.06], euler: [0, 0, 0] }]);
+  await settle(1.4);
+  const mug2 = place({ id: 'mug', pos: [0, tray.body.position.y + 0.062, rackZ() - 0.06], euler: [Math.PI, 0, 0] });
+  await settle(1.4);
+
+  const shaded = g.cycle.coverageOf(mug2);
+  log(`     mug on the tray: ${(shaded * 100).toFixed(0)}% of it can see a spray arm`);
+
+  // control: take the tray away and the same mug should come clear
+  g.world.removeBody(tray.body);
+  g.view.scene.remove(tray.mesh);
+  g.game.dishes.splice(g.game.dishes.indexOf(tray), 1);
+  const clear = g.cycle.coverageOf(mug2);
+  log(`     same mug with the tray removed: ${(clear * 100).toFixed(0)}%`);
+
+  (shaded < 0.5 && clear > shaded + 0.3)
+    ? ok('the tray registers as a shadow, and removing it clears the mug')
+    : bad(`shading not detected: ${(shaded * 100).toFixed(0)}% with the tray, ${(clear * 100).toFixed(0)}% without`);
+
+  // ---------------------------------------------------------------- 6
+  log('\n6. full load under physics: no NaNs, nothing escapes the kitchen');
+  g.loadLevel(0);
+  await sleep(400);
+  g.autoFill();
+  await waitFor(() => g.game.queue.every((e) => e.remaining === 0), 25000, 'autofill');
+  await settle(2.5);
+  let nan = 0, gone = 0;
+  for (const d of g.game.dishes) {
+    const p = d.body.position;
+    if (![p.x, p.y, p.z].every(Number.isFinite)) nan++;
+    else if (Math.abs(p.x) > 2 || Math.abs(p.z) > 2 || p.y < -0.2 || p.y > 3) gone++;
+  }
+  nan ? bad(`${nan} dishes have NaN positions`) : ok(`${g.game.dishes.length} dishes simulated, no NaNs`);
+  gone ? bad(`${gone} dishes left the kitchen`) : ok('nothing escaped the kitchen');
+
+  // ---------------------------------------------------------------- 7
+  /* The reported bug: put a mug in the upper rack, let it settle, switch racks, and
+     the mug stayed where it was while the shelf slid away underneath it. Cannon skips
+     narrowphase when a kinematic body meets a sleeping one, so the mug had to be
+     properly asleep for this to reproduce — hence the long settle. */
+  log('\n7. a mug asleep in the upper rack should ride it when the rack slides');
+  g.dw.door.snapTo(true);
+  g.dw.racks.upper.snapTo(1);
+  g.dw.racks.lower.snapTo(0);
+  const upRackZ = () => g.dw.racks.upper.z;
+  const rider = setup([{ id: 'mug', pos: [0.04, upperY + 0.05, upRackZ() - 0.04], euler: [Math.PI, 0, 0] }])[0];
+  await settle(3.5);
+
+  const wasAsleep = rider.body.sleepState === 2;
+  log(`     mug ${wasAsleep ? 'is asleep' : 'is still awake'} before the rack moves`);
+  const relBefore = rider.body.position.z - g.dw.racks.upper.z;
+
+  g.dw.racks.upper.slideIn();
+  await waitFor(() => !g.dw.racks.upper.isMoving, 30000, 'upper rack to slide in');
+  await settle(1.0);
+
+  const relAfter = rider.body.position.z - g.dw.racks.upper.z;
+  const slip = Math.abs(relAfter - relBefore);
+  const stillUp = rider.body.position.y > upperY;
+  log(`     mug slipped ${(slip * 100).toFixed(1)} cm relative to the rack, ` +
+      `y=${rider.body.position.y.toFixed(3)} (deck ${upperY})`);
+  (slip < 0.05 && stillUp)
+    ? ok('the mug rode the rack in')
+    : bad(`the mug did not ride the rack: slipped ${(slip * 100).toFixed(1)} cm, ` +
+          `${stillUp ? 'still up top' : 'fell out of the upper rack'}`);
+
+  // ---------------------------------------------------------------- 8
+  /* A load the machine refuses used to leave the player with nothing but a Repack
+     button — twenty items thrown away because one was in the wrong place. The load
+     must survive the refusal, and the dish at fault must be marked. */
+  log('\n8. a refused load should survive, with the culprit marked');
+  reopen();
+  setup([
+    { id: 'dinner-plate', pos: [0, lowerY + 0.16, rackZ() - 0.06], euler: [Math.PI / 2, 0, 0] },
+    { id: 'mug', pos: [0.12, lowerY + 0.06, rackZ() - 0.06], euler: [Math.PI, 0, 0] },
+    { id: 'dinner-plate', pos: [0, lowerY + 0.06, rackZ() + 0.32], euler: [0, 0, Math.PI / 2] },
+  ]);
+  for (const e of g.game.queue) e.remaining = 0;     // so the cycle is allowed to start
+  await settle(2.0);
+
+  const before = g.game.dishes.length;
+  await g.runCycle();
+  await sleep(400);
+  const after = g.game.dishes.length;
+  const marked = g.game.dishes.filter((d) => d.flagged);
+  log(`     ${before} dishes before, ${after} after; ${marked.length} marked`);
+  (after === before && marked.length >= 1)
+    ? ok(`the load survived the refusal and ${marked.length} dish(es) were flagged`)
+    : bad(`load not preserved (${before} -> ${after}) or nothing flagged (${marked.length})`);
+
+  // and picking a flagged dish up should clear its mark
+  if (marked.length) {
+    g.grabber.grab(marked[0]);
+    await sleep(200);
+    const stillFlagged = marked[0].flagged;
+    g.grabber.release();
+    stillFlagged ? bad('picking a flagged dish up left it flagged')
+                 : ok('picking it up clears the mark');
+  }
+
+  const fps = g.view.renderer.info.render.frame;
+  log(`\n     frames rendered: ${fps}`);
+  log(`     render calls/frame: ${g.view.renderer.info.render.calls}, triangles: ${g.view.renderer.info.render.triangles}`);
+  log(`     physics bodies: ${g.world.bodies.length}`);
+}
+
+main().then(() => {
+  status.textContent = failures ? `${failures} FAILURE(S)` : 'ALL BROWSER TESTS PASSED';
+  status.className = failures ? 'bad' : 'ok';
+  document.title = failures ? `FAIL:${failures}` : 'PASS';
+  beam(failures ? `=== RESULT FAIL ${failures}` : '=== RESULT PASS');
+}).catch((e) => {
+  status.textContent = `HARNESS ERROR: ${e.message}`;
+  status.className = 'bad';
+  document.title = `ERROR:${e.message}`;
+  beam(`=== RESULT HARNESS-ERROR ${e.message}`);
+  log(String(e.stack || e), 'bad');
+});
+</script>
