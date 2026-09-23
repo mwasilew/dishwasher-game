@@ -150,3 +150,9 @@ stops the cycle, and that spray shadowing is detected.
 - `?level=7&fill=1` — tip the whole queue into the racks. Not a solver; it exists to
   exercise the physics under a full load
 - `?level=7&auto=1` — auto-load the level on startup
+
+## License
+
+BSD 3-Clause — see [LICENSE](LICENSE). The libraries in `vendor/`
+([three.js](https://github.com/mrdoob/three.js) and
+[cannon-es](https://github.com/pmndrs/cannon-es)) are MIT-licensed by their own authors.

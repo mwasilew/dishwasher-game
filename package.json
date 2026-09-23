@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "A 3D WebGL puzzle game about packing dishes into a two-drawer dishwasher.",
   "type": "module",
+  "license": "BSD-3-Clause",
   "private": true,
   "scripts": {
     "start": "python3 -m http.server 8000"
